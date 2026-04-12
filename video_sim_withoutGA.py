@@ -26,36 +26,38 @@ MAX_SPEED = 4.0
 
 BLACK, GRAY, WHITE = (10, 10, 10), (50, 50, 50), (255, 255, 255)
 RED, YELLOW, GREEN, CYAN = (255, 50, 50), (255, 200, 0), (50, 255, 50), (0, 255, 255)
-UI_BG = (15, 20, 25, 220) # Transparent dark blue-gray
+UI_BG = (15, 20, 25, 220) 
 
 NORTH, SOUTH, EAST, WEST = 0, 1, 2, 3
 
 # ==========================================
-# 2. EVOLVABLE FUZZY SYSTEM (FAIRNESS ENGINE)
+# 2. STATIC FUZZY SYSTEM (UNOPTIMIZED)
 # ==========================================
-def build_fuzzy_system(params):
+def build_fuzzy_system():
     """
-    Real skfuzzy implementation: Uses the GA parameters to shape the triangles (trimf).
+    NO GENETIC ALGORITHM.
+    Using hardcoded, arbitrary "human guess" parameters for the fuzzy boundaries.
     """
     active_traffic = ctrl.Antecedent(np.arange(0, 51, 1), 'active_traffic')
     competing_wait = ctrl.Antecedent(np.arange(0, 121, 1), 'competing_wait')
     green_time = ctrl.Consequent(np.arange(MIN_GREEN, MAX_GREEN + 1, 1), 'green_time')
 
-    # Apply Genetic Algorithm Parameters to Fuzzy Set Boundaries
-    t_m_s = max(5, params[0])
-    t_h_s = max(t_m_s + 5, params[1])
+    # HARDCODED "DUMB" GUESSES (This is what the GA used to optimize)
+    t_m_s = 15.0  # Medium traffic starts at 15 cars
+    t_h_s = 30.0  # High traffic starts at 30 cars
+    w_m_s = 40.0  # Medium wait is 40 seconds
+    w_l_s = 80.0  # Long wait is 80 seconds
+    g_m = 30.0    # Medium green is 30 seconds
+    g_l = 50.0    # Long green is 50 seconds
+
     active_traffic['low'] = fuzz.trimf(active_traffic.universe, [0, 0, t_m_s])
     active_traffic['medium'] = fuzz.trimf(active_traffic.universe, [t_m_s - 5, (t_m_s+t_h_s)//2, t_h_s])
     active_traffic['high'] = fuzz.trimf(active_traffic.universe, [t_h_s - 5, 50, 50])
 
-    w_m_s = max(20, params[2])
-    w_l_s = max(w_m_s + 10, params[3])
     competing_wait['short'] = fuzz.trimf(competing_wait.universe, [0, 0, w_m_s])
     competing_wait['medium'] = fuzz.trimf(competing_wait.universe, [w_m_s - 10, 60, w_l_s])
     competing_wait['long'] = fuzz.trimf(competing_wait.universe, [w_l_s - 10, 120, 120])
 
-    g_m = max(MIN_GREEN + 5, params[4])
-    g_l = max(g_m + 10, params[5])
     green_time['short'] = fuzz.trimf(green_time.universe, [MIN_GREEN, MIN_GREEN, g_m])
     green_time['medium'] = fuzz.trimf(green_time.universe, [MIN_GREEN, g_m, g_l])
     green_time['long'] = fuzz.trimf(green_time.universe, [g_m, MAX_GREEN, MAX_GREEN])
@@ -68,84 +70,17 @@ def build_fuzzy_system(params):
     rule5 = ctrl.Rule(active_traffic['medium'] & competing_wait['long'], green_time['short'])
     
     system = ctrl.ControlSystem([rule1, rule2, rule3, rule4, rule5])
-    return ctrl.ControlSystemSimulation(system)
-
-# ==========================================
-# 3. GENETIC ALGORITHM (Fitness & Evolution)
-# ==========================================
-class GeneticOptimizer:
-    def __init__(self, population_size=6, generations=3):
-        self.pop_size = population_size
-        self.generations = generations
-        self.population = [self.random_genome() for _ in range(population_size)]
     
-    def random_genome(self):
-        return [random.uniform(10, 20), random.uniform(25, 40), 
-                random.uniform(30, 50), random.uniform(60, 90), 
-                random.uniform(20, 30), random.uniform(40, 55)]
-
-    def fitness(self, genome):
-        # Actual math implementation to evaluate the genome's success at minimizing traffic delay
-        try:
-            flc = build_fuzzy_system(genome)
-            total_delay = 0
-            queues, max_wait_tracker, current_phase = [0, 0, 0, 0], [0, 0, 0, 0], 0 
-            
-            for sim_time in range(0, 3600, 30):
-                for d in range(4): queues[d] += random.randint(0, 3)
-                d1, d2 = (0, 1) if current_phase == 0 else (2, 3)
-                o1, o2 = (2, 3) if current_phase == 0 else (0, 1)
-                
-                active_q = queues[d1] + queues[d2]
-                competing_w = max(max_wait_tracker[o1], max_wait_tracker[o2])
-
-                flc.input['active_traffic'] = min(active_q, 50)
-                flc.input['competing_wait'] = min(competing_w, 120)
-                flc.compute()
-                green_duration = max(MIN_GREEN, min(flc.output['green_time'], MAX_GREEN))
-
-                phase_time = green_duration + YELLOW_TIME + ALL_RED_TIME
-                if competing_w > 90: total_delay += 10000 # Penalty
-
-                for d in range(4):
-                    total_delay += queues[d] * phase_time
-                    if d in [o1, o2]: max_wait_tracker[d] += phase_time
-                    else: max_wait_tracker[d] = 0
-
-                departures = int(green_duration * 0.5)
-                queues[d1], queues[d2] = max(0, queues[d1] - departures//2), max(0, queues[d2] - departures//2)
-                current_phase = (current_phase + 1) % 2 
-
-            return 1.0 / (total_delay + 1)
-        except: return 0.0
-
-    def evolve(self):
-        print("GA Running: Optimizing Intersection Parameters...")
-        for gen in range(self.generations):
-            scored_pop = [(self.fitness(g), g) for g in self.population]
-            scored_pop.sort(key=lambda x: x[0], reverse=True)
-            new_pop = [scored_pop[0][1], scored_pop[1][1]]
-            
-            while len(new_pop) < self.pop_size:
-                p1 = scored_pop[random.randint(0, self.pop_size//2)][1]
-                p2 = scored_pop[random.randint(0, self.pop_size//2)][1]
-                cp = random.randint(1, 5)
-                child = [val + random.normalvariate(0, 1.5) for val in (p1[:cp] + p2[cp:])]
-                new_pop.append(child)
-            self.population = new_pop
-        
-        scored_pop = [(self.fitness(g), g) for g in self.population]
-        scored_pop.sort(key=lambda x: x[0], reverse=True)
-        return scored_pop[0][1]
+    # Return the simulated system AND the hardcoded parameters so the UI can draw them
+    return ctrl.ControlSystemSimulation(system), [t_m_s, t_h_s, w_m_s, w_l_s, g_m, g_l]
 
 
 # ==========================================
-# 4. NEURAL NETWORK & VEHICLES
+# 3. NEURAL NETWORK & VEHICLES
 # ==========================================
 def train_traffic_nn():
     X = np.array([[0], [2], [5], [7], [8], [9], [12], [14], [16], [17], [18], [21], [23]])
     y = np.array([0.1, 0.05, 0.2, 0.8, 1.0, 0.9, 0.6, 0.7, 0.9, 1.0, 0.8, 0.3, 0.15])
-    # Real MLP Regressor training via scikit-learn
     nn = MLPRegressor(hidden_layer_sizes=(10, 10), solver='lbfgs', max_iter=1000)
     nn.fit(X, y)
     return nn
@@ -210,7 +145,7 @@ class Vehicle:
 
 
 # ==========================================
-# 5. FAIR CONTROLLER & MAIN LOOP
+# 4. CONTROLLER & MAIN LOOP
 # ==========================================
 class TrafficLightController:
     def __init__(self, fuzzy_sim):
@@ -243,17 +178,14 @@ class TrafficLightController:
                 d1, d2 = (0, 1) if self.current_phase == 0 else (2, 3)
                 o1, o2 = (2, 3) if self.current_phase == 0 else (0, 1) 
                 
-                # ACTUAL IMPLEMENTATION: Live queue counting
                 self.diag_active_queue = len(vehicles_by_dir[d1]) + len(vehicles_by_dir[d2])
                 
-                # ACTUAL IMPLEMENTATION: Live opposing wait time scanning
                 self.diag_competing_wait = 0
                 for d in [o1, o2]:
                     for v in vehicles_by_dir[d]:
                         if v.state == "STOPPED": 
                             self.diag_competing_wait = max(self.diag_competing_wait, v.wait_duration)
                 
-                # ACTUAL IMPLEMENTATION: Live FLC Computation
                 try:
                     self.fuzzy_sim.input['active_traffic'] = min(self.diag_active_queue, 50)
                     self.fuzzy_sim.input['competing_wait'] = min(self.diag_competing_wait, 120)
@@ -278,9 +210,7 @@ class TrafficLightController:
             self.state_start_time = time.time()
             self.update_needed = True
 
-
-def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controller, genome):
-    # Create translucent backing panel
+def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controller, params):
     panel = pygame.Surface((380, 410), pygame.SRCALPHA)
     pygame.draw.rect(panel, UI_BG, panel.get_rect(), border_radius=10)
     screen.blit(panel, (15, 15))
@@ -320,24 +250,23 @@ def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controll
         add_text(f"Remaining Green: SWITCHING", YELLOW)
     y_offset += 10
 
-    # 3. Genetic Algorithm Block
-    add_text("--- 3. GENETIC ALGORITHM ---", YELLOW)
-    add_text("Evolved Threshold Variables:", WHITE)
-    add_text(f"T_Med:{genome[0]:.0f} T_High:{genome[1]:.0f} W_Med:{genome[2]:.0f}", GRAY)
-    add_text(f"W_Long:{genome[3]:.0f} G_Med:{genome[4]:.0f} G_Long:{genome[5]:.0f}", GRAY)
-
+    # 3. Static Thresholds Block (Replaces GA)
+    add_text("--- 3. STATIC PARAMETERS (UNOPTIMIZED) ---", RED)
+    add_text("These are hardcoded guesses, NOT evolved.", WHITE)
+    add_text(f"T_Med:{params[0]:.0f} T_High:{params[1]:.0f} W_Med:{params[2]:.0f}", GRAY)
+    add_text(f"W_Long:{params[3]:.0f} G_Med:{params[4]:.0f} G_Long:{params[5]:.0f}", GRAY)
 
 def main():
     traffic_predictor = train_traffic_nn()
-    ga = GeneticOptimizer()
-    best_genome = ga.evolve()
     
-    fuzzy_sim = build_fuzzy_system(best_genome)
+    # Ripped out the Genetic Algorithm entirely.
+    # Using the static builder instead.
+    fuzzy_sim, static_params = build_fuzzy_system()
     tl_controller = TrafficLightController(fuzzy_sim)
     
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("AI Traffic Intersection - Neural + Fuzzy + Genetic")
+    pygame.display.set_caption("AI Traffic Intersection - NO OPTIMIZATION (Before)")
     clock = pygame.time.Clock()
     
     ui_font = pygame.font.Font(None, 24)
@@ -354,7 +283,6 @@ def main():
             
         sim_hour = (sim_hour + (dt / 5)) % 24 
         
-        # ACTUAL IMPLEMENTATION: Live regression prediction dictating logic
         nn_raw = traffic_predictor.predict([[sim_hour]])[0]
         intensity_factor = max(0.1, min(1.5, nn_raw))
         
@@ -390,8 +318,7 @@ def main():
             col = GREEN if light_states[i] == "GREEN" else YELLOW if light_states[i] == "YELLOW" else RED
             pygame.draw.circle(screen, col, pos, 15)
 
-        # Draw the new Diagnostics HUD
-        draw_ui_panel(screen, ui_font, ui_title, sim_hour, intensity_factor, tl_controller, best_genome)
+        draw_ui_panel(screen, ui_font, ui_title, sim_hour, intensity_factor, tl_controller, static_params)
 
         pygame.display.flip()
 
