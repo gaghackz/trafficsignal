@@ -4,7 +4,6 @@ import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 from sklearn.neural_network import MLPRegressor
 import time
-import math
 import random
 import sys
 
@@ -31,24 +30,61 @@ UI_BG = (15, 20, 25, 220)
 NORTH, SOUTH, EAST, WEST = 0, 1, 2, 3
 
 # ==========================================
-# 2. STATIC FUZZY SYSTEM (UNOPTIMIZED)
+# 2. STATS LOGGER
+# ==========================================
+class StatsLogger:
+    def __init__(self):
+        self.total_spawned = 0
+        self.total_cleared = 0
+        self.total_accumulated_delay = 0.0
+        self.max_wait_time = 0.0
+        self.start_time = time.time()
+        print("🚥 Stats Logger Initialized. Simulation running...")
+
+    def log_spawn(self):
+        self.total_spawned += 1
+
+    def log_cleared_vehicle(self, vehicle):
+        self.total_cleared += 1
+        # Calculate total wait time for this specific car
+        final_wait = vehicle.total_historical_wait + vehicle.wait_duration
+        
+        self.total_accumulated_delay += final_wait
+        if final_wait > self.max_wait_time:
+            self.max_wait_time = final_wait
+
+    def print_final_report(self):
+        end_time = time.time()
+        real_duration = end_time - self.start_time
+        avg_wait = self.total_accumulated_delay / self.total_cleared if self.total_cleared > 0 else 0
+
+        print("\n" + "="*50)
+        print("🚦 TRAFFIC SIMULATION - FINAL STATISTICS 🚦")
+        print("="*50)
+        print(f"Total Real Time Elapsed: {real_duration:.2f} seconds")
+        print(f"Total Vehicles Spawned:  {self.total_spawned}")
+        print(f"Total Vehicles Cleared:  {self.total_cleared}")
+        print("-" * 50)
+        print(f"Total Accumulated Delay: {self.total_accumulated_delay:.1f} seconds")
+        print(f"Average Wait Time/Car:   {avg_wait:.1f} seconds")
+        print(f"Max Wait Time (Worst):   {self.max_wait_time:.1f} seconds")
+        print(f"Intersection Throughput: {(self.total_cleared / real_duration):.2f} cars/sec")
+        print("="*50 + "\n")
+
+# ==========================================
+# 3. STATIC FUZZY SYSTEM (UNOPTIMIZED)
 # ==========================================
 def build_fuzzy_system():
-    """
-    NO GENETIC ALGORITHM.
-    Using hardcoded, arbitrary "human guess" parameters for the fuzzy boundaries.
-    """
     active_traffic = ctrl.Antecedent(np.arange(0, 51, 1), 'active_traffic')
     competing_wait = ctrl.Antecedent(np.arange(0, 121, 1), 'competing_wait')
     green_time = ctrl.Consequent(np.arange(MIN_GREEN, MAX_GREEN + 1, 1), 'green_time')
 
-    # HARDCODED "DUMB" GUESSES (This is what the GA used to optimize)
-    t_m_s = 15.0  # Medium traffic starts at 15 cars
-    t_h_s = 30.0  # High traffic starts at 30 cars
-    w_m_s = 40.0  # Medium wait is 40 seconds
-    w_l_s = 80.0  # Long wait is 80 seconds
-    g_m = 30.0    # Medium green is 30 seconds
-    g_l = 50.0    # Long green is 50 seconds
+    t_m_s = 15.0  
+    t_h_s = 30.0  
+    w_m_s = 40.0  
+    w_l_s = 80.0  
+    g_m = 30.0    
+    g_l = 50.0    
 
     active_traffic['low'] = fuzz.trimf(active_traffic.universe, [0, 0, t_m_s])
     active_traffic['medium'] = fuzz.trimf(active_traffic.universe, [t_m_s - 5, (t_m_s+t_h_s)//2, t_h_s])
@@ -62,7 +98,6 @@ def build_fuzzy_system():
     green_time['medium'] = fuzz.trimf(green_time.universe, [MIN_GREEN, g_m, g_l])
     green_time['long'] = fuzz.trimf(green_time.universe, [g_m, MAX_GREEN, MAX_GREEN])
 
-    # FAIRNESS RULES
     rule1 = ctrl.Rule(active_traffic['low'], green_time['short'])
     rule2 = ctrl.Rule(active_traffic['high'] & competing_wait['short'], green_time['long'])
     rule3 = ctrl.Rule(active_traffic['high'] & competing_wait['long'], green_time['medium'])
@@ -70,13 +105,11 @@ def build_fuzzy_system():
     rule5 = ctrl.Rule(active_traffic['medium'] & competing_wait['long'], green_time['short'])
     
     system = ctrl.ControlSystem([rule1, rule2, rule3, rule4, rule5])
-    
-    # Return the simulated system AND the hardcoded parameters so the UI can draw them
     return ctrl.ControlSystemSimulation(system), [t_m_s, t_h_s, w_m_s, w_l_s, g_m, g_l]
 
 
 # ==========================================
-# 3. NEURAL NETWORK & VEHICLES
+# 4. NEURAL NETWORK & VEHICLES
 # ==========================================
 def train_traffic_nn():
     X = np.array([[0], [2], [5], [7], [8], [9], [12], [14], [16], [17], [18], [21], [23]])
@@ -97,8 +130,11 @@ class Vehicle:
         self.speed = MAX_SPEED
         self.state = "MOVING"
         self.color = (random.randint(100,255), random.randint(100,255), random.randint(100,255))
-        self.wait_duration = 0
+        
+        # Track wait times for the logger
         self.stop_time = time.time()
+        self.wait_duration = 0
+        self.total_historical_wait = 0.0 
 
     def update_physics(self, light_state, vehicle_ahead):
         target_speed = MAX_SPEED
@@ -137,6 +173,9 @@ class Vehicle:
                 self.stop_time = time.time()
             self.wait_duration = time.time() - self.stop_time
         else:
+            if self.state == "STOPPED":
+                # Car started moving again, bank its wait time
+                self.total_historical_wait += self.wait_duration
             self.state = "MOVING"
             self.wait_duration = 0
 
@@ -145,7 +184,7 @@ class Vehicle:
 
 
 # ==========================================
-# 4. CONTROLLER & MAIN LOOP
+# 5. CONTROLLER & MAIN LOOP
 # ==========================================
 class TrafficLightController:
     def __init__(self, fuzzy_sim):
@@ -156,7 +195,6 @@ class TrafficLightController:
         self.green_duration = MIN_GREEN
         self.update_needed = True
         
-        # Diagnostic variables for UI
         self.diag_active_queue = 0
         self.diag_competing_wait = 0
 
@@ -228,13 +266,11 @@ def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controll
     add_text("LIVE AI DIAGNOSTICS", CYAN, True)
     y_offset += 5
 
-    # 1. Neural Network Block
     add_text("--- 1. NEURAL NETWORK (sklearn) ---", YELLOW)
     add_text(f"Time of Day: {int(sim_hour):02d}:00", WHITE)
     add_text(f"Raw Output (Traffic Vol): {intensity_factor:.2f}x", WHITE)
     y_offset += 10
 
-    # 2. Fuzzy Logic Block
     phase_name = "NORTH/SOUTH" if controller.current_phase == 0 else "EAST/WEST"
     add_text("--- 2. FUZZY LOGIC (skfuzzy) ---", YELLOW)
     add_text(f"Active Phase: {phase_name}", WHITE)
@@ -250,7 +286,6 @@ def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controll
         add_text(f"Remaining Green: SWITCHING", YELLOW)
     y_offset += 10
 
-    # 3. Static Thresholds Block (Replaces GA)
     add_text("--- 3. STATIC PARAMETERS (UNOPTIMIZED) ---", RED)
     add_text("These are hardcoded guesses, NOT evolved.", WHITE)
     add_text(f"T_Med:{params[0]:.0f} T_High:{params[1]:.0f} W_Med:{params[2]:.0f}", GRAY)
@@ -258,11 +293,11 @@ def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controll
 
 def main():
     traffic_predictor = train_traffic_nn()
-    
-    # Ripped out the Genetic Algorithm entirely.
-    # Using the static builder instead.
     fuzzy_sim, static_params = build_fuzzy_system()
     tl_controller = TrafficLightController(fuzzy_sim)
+    
+    # Initialize Logger
+    logger = StatsLogger()
     
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -279,7 +314,8 @@ def main():
     while running:
         dt = clock.tick(60) / 1000.0 
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: running = False
+            if event.type == pygame.QUIT: 
+                running = False
             
         sim_hour = (sim_hour + (dt / 5)) % 24 
         
@@ -290,6 +326,7 @@ def main():
         if random.random() < spawn_chance_per_sec * dt:
             direction = random.choices([NORTH, SOUTH, EAST, WEST], weights=[3, 3, 2, 2])[0]
             vehicles.append(Vehicle(direction))
+            logger.log_spawn() # Log the newly spawned car
 
         vehicles_by_dir = [[] for _ in range(4)]
         for v in vehicles: vehicles_by_dir[v.direction].append(v)
@@ -304,7 +341,14 @@ def main():
             if idx > 0: ahead = lane_mates[idx-1]
             v.update_physics(light_states[v.direction], ahead)
 
-        vehicles = [v for v in vehicles if -100 < v.x < WIDTH+100 and -100 < v.y < HEIGHT+100]
+        # Update vehicle list and log the ones that successfully leave the screen
+        active_vehicles = []
+        for v in vehicles:
+            if -100 < v.x < WIDTH+100 and -100 < v.y < HEIGHT+100:
+                active_vehicles.append(v)
+            else:
+                logger.log_cleared_vehicle(v) # Log the car before it gets deleted
+        vehicles = active_vehicles
 
         # RENDERING
         screen.fill((20, 100, 20))
@@ -321,6 +365,11 @@ def main():
         draw_ui_panel(screen, ui_font, ui_title, sim_hour, intensity_factor, tl_controller, static_params)
 
         pygame.display.flip()
+        
+    # User pressed X to close the window. Print the final report before shutting down.
+    logger.print_final_report()
+    pygame.quit()
+    sys.exit()
 
 if __name__ == "__main__":
     main()

@@ -4,7 +4,6 @@ import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 from sklearn.neural_network import MLPRegressor
 import time
-import math
 import random
 import sys
 
@@ -24,9 +23,11 @@ ALL_RED_TIME = 2.0
 CAR_SIZE = (20, 40)
 MAX_SPEED = 4.0
 
+TOTAL_CARS = 300  # PERFECTLY SYNCED BENCHMARK CAP
+
 BLACK, GRAY, WHITE = (10, 10, 10), (50, 50, 50), (255, 255, 255)
 RED, YELLOW, GREEN, CYAN = (255, 50, 50), (255, 200, 0), (50, 255, 50), (0, 255, 255)
-UI_BG = (15, 20, 25, 220) # Transparent dark blue-gray
+UI_BG = (15, 20, 25, 220) 
 
 NORTH, SOUTH, EAST, WEST = 0, 1, 2, 3
 
@@ -40,31 +41,27 @@ class StatsLogger:
         self.total_accumulated_delay = 0.0
         self.max_wait_time = 0.0
         self.start_time = time.time()
-        print("🚥 Stats Logger Initialized. Optimization Running...")
+        print("🚥 Stats Logger Initialized. Unoptimized Benchmark Running...")
 
     def log_spawn(self):
         self.total_spawned += 1
 
     def log_cleared_vehicle(self, vehicle):
         self.total_cleared += 1
-        # Calculate total wait time for this specific car
         final_wait = vehicle.total_historical_wait + vehicle.wait_duration
-        
         self.total_accumulated_delay += final_wait
         if final_wait > self.max_wait_time:
             self.max_wait_time = final_wait
 
     def print_final_report(self):
-        end_time = time.time()
-        real_duration = end_time - self.start_time
+        real_duration = time.time() - self.start_time
         avg_wait = self.total_accumulated_delay / self.total_cleared if self.total_cleared > 0 else 0
 
         print("\n" + "="*50)
-        print("🚦 OPTIMIZED TRAFFIC SIMULATION - FINAL STATISTICS 🚦")
+        print("🚦 UNOPTIMIZED SIMULATION - FINAL STATISTICS 🚦")
         print("="*50)
         print(f"Total Real Time Elapsed: {real_duration:.2f} seconds")
-        print(f"Total Vehicles Spawned:  {self.total_spawned}")
-        print(f"Total Vehicles Cleared:  {self.total_cleared}")
+        print(f"Total Vehicles Cleared:  {self.total_cleared} / {TOTAL_CARS}")
         print("-" * 50)
         print(f"Total Accumulated Delay: {self.total_accumulated_delay:.1f} seconds")
         print(f"Average Wait Time/Car:   {avg_wait:.1f} seconds")
@@ -73,36 +70,29 @@ class StatsLogger:
         print("="*50 + "\n")
 
 # ==========================================
-# 3. EVOLVABLE FUZZY SYSTEM (FAIRNESS ENGINE)
+# 3. STATIC FUZZY SYSTEM (UNOPTIMIZED)
 # ==========================================
-def build_fuzzy_system(params):
-    """
-    Real skfuzzy implementation: Uses the GA parameters to shape the triangles (trimf).
-    """
+def build_fuzzy_system():
     active_traffic = ctrl.Antecedent(np.arange(0, 51, 1), 'active_traffic')
     competing_wait = ctrl.Antecedent(np.arange(0, 121, 1), 'competing_wait')
     green_time = ctrl.Consequent(np.arange(MIN_GREEN, MAX_GREEN + 1, 1), 'green_time')
 
-    # Apply Genetic Algorithm Parameters to Fuzzy Set Boundaries
-    t_m_s = max(5, params[0])
-    t_h_s = max(t_m_s + 5, params[1])
+    t_m_s, t_h_s = 15.0, 30.0  
+    w_m_s, w_l_s = 40.0, 80.0  
+    g_m, g_l = 30.0, 50.0    
+
     active_traffic['low'] = fuzz.trimf(active_traffic.universe, [0, 0, t_m_s])
     active_traffic['medium'] = fuzz.trimf(active_traffic.universe, [t_m_s - 5, (t_m_s+t_h_s)//2, t_h_s])
     active_traffic['high'] = fuzz.trimf(active_traffic.universe, [t_h_s - 5, 50, 50])
 
-    w_m_s = max(20, params[2])
-    w_l_s = max(w_m_s + 10, params[3])
     competing_wait['short'] = fuzz.trimf(competing_wait.universe, [0, 0, w_m_s])
     competing_wait['medium'] = fuzz.trimf(competing_wait.universe, [w_m_s - 10, 60, w_l_s])
     competing_wait['long'] = fuzz.trimf(competing_wait.universe, [w_l_s - 10, 120, 120])
 
-    g_m = max(MIN_GREEN + 5, params[4])
-    g_l = max(g_m + 10, params[5])
     green_time['short'] = fuzz.trimf(green_time.universe, [MIN_GREEN, MIN_GREEN, g_m])
     green_time['medium'] = fuzz.trimf(green_time.universe, [MIN_GREEN, g_m, g_l])
     green_time['long'] = fuzz.trimf(green_time.universe, [g_m, MAX_GREEN, MAX_GREEN])
 
-    # FAIRNESS RULES
     rule1 = ctrl.Rule(active_traffic['low'], green_time['short'])
     rule2 = ctrl.Rule(active_traffic['high'] & competing_wait['short'], green_time['long'])
     rule3 = ctrl.Rule(active_traffic['high'] & competing_wait['long'], green_time['medium'])
@@ -110,84 +100,14 @@ def build_fuzzy_system(params):
     rule5 = ctrl.Rule(active_traffic['medium'] & competing_wait['long'], green_time['short'])
     
     system = ctrl.ControlSystem([rule1, rule2, rule3, rule4, rule5])
-    return ctrl.ControlSystemSimulation(system)
+    return ctrl.ControlSystemSimulation(system), [t_m_s, t_h_s, w_m_s, w_l_s, g_m, g_l]
 
 # ==========================================
-# 4. GENETIC ALGORITHM (Fitness & Evolution)
-# ==========================================
-class GeneticOptimizer:
-    def __init__(self, population_size=6, generations=3):
-        self.pop_size = population_size
-        self.generations = generations
-        self.population = [self.random_genome() for _ in range(population_size)]
-    
-    def random_genome(self):
-        return [random.uniform(10, 20), random.uniform(25, 40), 
-                random.uniform(30, 50), random.uniform(60, 90), 
-                random.uniform(20, 30), random.uniform(40, 55)]
-
-    def fitness(self, genome):
-        # Actual math implementation to evaluate the genome's success at minimizing traffic delay
-        try:
-            flc = build_fuzzy_system(genome)
-            total_delay = 0
-            queues, max_wait_tracker, current_phase = [0, 0, 0, 0], [0, 0, 0, 0], 0 
-            
-            for sim_time in range(0, 3600, 30):
-                for d in range(4): queues[d] += random.randint(0, 3)
-                d1, d2 = (0, 1) if current_phase == 0 else (2, 3)
-                o1, o2 = (2, 3) if current_phase == 0 else (0, 1)
-                
-                active_q = queues[d1] + queues[d2]
-                competing_w = max(max_wait_tracker[o1], max_wait_tracker[o2])
-
-                flc.input['active_traffic'] = min(active_q, 50)
-                flc.input['competing_wait'] = min(competing_w, 120)
-                flc.compute()
-                green_duration = max(MIN_GREEN, min(flc.output['green_time'], MAX_GREEN))
-
-                phase_time = green_duration + YELLOW_TIME + ALL_RED_TIME
-                if competing_w > 90: total_delay += 10000 # Penalty
-
-                for d in range(4):
-                    total_delay += queues[d] * phase_time
-                    if d in [o1, o2]: max_wait_tracker[d] += phase_time
-                    else: max_wait_tracker[d] = 0
-
-                departures = int(green_duration * 0.5)
-                queues[d1], queues[d2] = max(0, queues[d1] - departures//2), max(0, queues[d2] - departures//2)
-                current_phase = (current_phase + 1) % 2 
-
-            return 1.0 / (total_delay + 1)
-        except: return 0.0
-
-    def evolve(self):
-        print("GA Running: Optimizing Intersection Parameters...")
-        for gen in range(self.generations):
-            scored_pop = [(self.fitness(g), g) for g in self.population]
-            scored_pop.sort(key=lambda x: x[0], reverse=True)
-            new_pop = [scored_pop[0][1], scored_pop[1][1]]
-            
-            while len(new_pop) < self.pop_size:
-                p1 = scored_pop[random.randint(0, self.pop_size//2)][1]
-                p2 = scored_pop[random.randint(0, self.pop_size//2)][1]
-                cp = random.randint(1, 5)
-                child = [val + random.normalvariate(0, 1.5) for val in (p1[:cp] + p2[cp:])]
-                new_pop.append(child)
-            self.population = new_pop
-        
-        scored_pop = [(self.fitness(g), g) for g in self.population]
-        scored_pop.sort(key=lambda x: x[0], reverse=True)
-        return scored_pop[0][1]
-
-
-# ==========================================
-# 5. NEURAL NETWORK & VEHICLES
+# 4. NEURAL NETWORK & VEHICLES
 # ==========================================
 def train_traffic_nn():
     X = np.array([[0], [2], [5], [7], [8], [9], [12], [14], [16], [17], [18], [21], [23]])
     y = np.array([0.1, 0.05, 0.2, 0.8, 1.0, 0.9, 0.6, 0.7, 0.9, 1.0, 0.8, 0.3, 0.15])
-    # Real MLP Regressor training via scikit-learn
     nn = MLPRegressor(hidden_layer_sizes=(10, 10), solver='lbfgs', max_iter=1000)
     nn.fit(X, y)
     return nn
@@ -204,16 +124,13 @@ class Vehicle:
         self.speed = MAX_SPEED
         self.state = "MOVING"
         self.color = (random.randint(100,255), random.randint(100,255), random.randint(100,255))
-        
-        # Track wait times for the logger
         self.stop_time = time.time()
         self.wait_duration = 0
-        self.total_historical_wait = 0.0
+        self.total_historical_wait = 0.0 
 
     def update_physics(self, light_state, vehicle_ahead):
         target_speed = MAX_SPEED
         dist_to_stop = 9999
-        
         if light_state != "GREEN":
             if self.direction == NORTH: dist_to_stop = (CENTER_Y - STOP_LINE_OFFSET) - (self.y + self.h)
             elif self.direction == SOUTH: dist_to_stop = self.y - (CENTER_Y + STOP_LINE_OFFSET)
@@ -248,7 +165,6 @@ class Vehicle:
             self.wait_duration = time.time() - self.stop_time
         else:
             if self.state == "STOPPED":
-                # Car started moving again, bank its wait time
                 self.total_historical_wait += self.wait_duration
             self.state = "MOVING"
             self.wait_duration = 0
@@ -256,9 +172,8 @@ class Vehicle:
     def draw(self, surface):
         pygame.draw.rect(surface, self.color, (int(self.x), int(self.y), self.w, self.h))
 
-
 # ==========================================
-# 6. FAIR CONTROLLER & MAIN LOOP
+# 5. CONTROLLER & MAIN LOOP
 # ==========================================
 class TrafficLightController:
     def __init__(self, fuzzy_sim):
@@ -268,8 +183,6 @@ class TrafficLightController:
         self.state_start_time = time.time()
         self.green_duration = MIN_GREEN
         self.update_needed = True
-        
-        # Diagnostic variables for UI
         self.diag_active_queue = 0
         self.diag_competing_wait = 0
 
@@ -285,23 +198,16 @@ class TrafficLightController:
 
     def update(self, vehicles_by_dir):
         self.time_elapsed = time.time() - self.state_start_time
-        
         if self.state == "GREEN":
             if self.update_needed:
                 d1, d2 = (0, 1) if self.current_phase == 0 else (2, 3)
                 o1, o2 = (2, 3) if self.current_phase == 0 else (0, 1) 
-                
-                # ACTUAL IMPLEMENTATION: Live queue counting
                 self.diag_active_queue = len(vehicles_by_dir[d1]) + len(vehicles_by_dir[d2])
-                
-                # ACTUAL IMPLEMENTATION: Live opposing wait time scanning
                 self.diag_competing_wait = 0
                 for d in [o1, o2]:
                     for v in vehicles_by_dir[d]:
                         if v.state == "STOPPED": 
                             self.diag_competing_wait = max(self.diag_competing_wait, v.wait_duration)
-                
-                # ACTUAL IMPLEMENTATION: Live FLC Computation
                 try:
                     self.fuzzy_sim.input['active_traffic'] = min(self.diag_active_queue, 50)
                     self.fuzzy_sim.input['competing_wait'] = min(self.diag_competing_wait, 120)
@@ -309,50 +215,41 @@ class TrafficLightController:
                     self.green_duration = max(MIN_GREEN, min(self.fuzzy_sim.output['green_time'], MAX_GREEN))
                 except:
                     self.green_duration = MIN_GREEN
-                
                 self.update_needed = False
 
             if self.time_elapsed >= self.green_duration:
                 self.state = "YELLOW"
                 self.state_start_time = time.time()
-                
         elif self.state == "YELLOW" and self.time_elapsed >= YELLOW_TIME:
             self.state = "ALL_RED"
             self.state_start_time = time.time()
-                
         elif self.state == "ALL_RED" and self.time_elapsed >= ALL_RED_TIME:
             self.current_phase = (self.current_phase + 1) % 2
             self.state = "GREEN"
             self.state_start_time = time.time()
             self.update_needed = True
 
-
-def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controller, genome):
-    # Create translucent backing panel
+def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controller, params, logger):
     panel = pygame.Surface((380, 410), pygame.SRCALPHA)
     pygame.draw.rect(panel, UI_BG, panel.get_rect(), border_radius=10)
     screen.blit(panel, (15, 15))
-
-    y_offset = 25
-    x_offset = 30
+    y_offset, x_offset = 25, 30
 
     def add_text(text, color, is_title=False):
         nonlocal y_offset
         f = title_font if is_title else font
-        surf = f.render(text, True, color)
-        screen.blit(surf, (x_offset, y_offset))
+        screen.blit(f.render(text, True, color), (x_offset, y_offset))
         y_offset += 30 if is_title else 22
 
-    add_text("LIVE AI DIAGNOSTICS", CYAN, True)
+    add_text("UNOPTIMIZED BENCHMARK", RED, True)
+    add_text(f"Progress: {logger.total_cleared} / {TOTAL_CARS} Cars", CYAN)
     y_offset += 5
 
-    # 1. Neural Network Block
     add_text("--- 1. NEURAL NETWORK (sklearn) ---", YELLOW)
     add_text(f"Time of Day: {int(sim_hour):02d}:00", WHITE)
     add_text(f"Raw Output (Traffic Vol): {intensity_factor:.2f}x", WHITE)
     y_offset += 10
 
-    # 2. Fuzzy Logic Block
     phase_name = "NORTH/SOUTH" if controller.current_phase == 0 else "EAST/WEST"
     add_text("--- 2. FUZZY LOGIC (skfuzzy) ---", YELLOW)
     add_text(f"Active Phase: {phase_name}", WHITE)
@@ -364,57 +261,40 @@ def draw_ui_panel(screen, font, title_font, sim_hour, intensity_factor, controll
         add_text(f"Output (Total Green): {controller.green_duration:.1f} sec", GREEN)
         add_text(f"Remaining Green: {rem:.1f} sec", GREEN)
     else:
-        add_text(f"Output (Total Green): ---", GRAY)
         add_text(f"Remaining Green: SWITCHING", YELLOW)
     y_offset += 10
 
-    # 3. Genetic Algorithm Block
-    add_text("--- 3. GENETIC ALGORITHM ---", YELLOW)
-    add_text("Evolved Threshold Variables:", WHITE)
-    add_text(f"T_Med:{genome[0]:.0f} T_High:{genome[1]:.0f} W_Med:{genome[2]:.0f}", GRAY)
-    add_text(f"W_Long:{genome[3]:.0f} G_Med:{genome[4]:.0f} G_Long:{genome[5]:.0f}", GRAY)
-
+    add_text("--- 3. STATIC PARAMETERS ---", RED)
+    add_text("Hardcoded human guesses.", WHITE)
 
 def main():
     traffic_predictor = train_traffic_nn()
-    ga = GeneticOptimizer()
-    best_genome = ga.evolve()
-    
-    fuzzy_sim = build_fuzzy_system(best_genome)
+    fuzzy_sim, static_params = build_fuzzy_system()
     tl_controller = TrafficLightController(fuzzy_sim)
-    
-    # Initialize Logger
     logger = StatsLogger()
     
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("AI Traffic Intersection - Neural + Fuzzy + Genetic")
-    clock = pygame.time.Clock()
+    pygame.display.set_caption("AI Traffic Intersection - UNOPTIMIZED Benchmark")
+    clock, ui_font, ui_title = pygame.time.Clock(), pygame.font.Font(None, 24), pygame.font.Font(None, 32)
+    vehicles, sim_hour, running = [], 7.0, True
     
-    ui_font = pygame.font.Font(None, 24)
-    ui_title = pygame.font.Font(None, 32)
-
-    vehicles = []
-    sim_hour = 7.0 
-    
-    running = True
     while running:
         dt = clock.tick(60) / 1000.0 
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: 
-                running = False
+            if event.type == pygame.QUIT: running = False
             
         sim_hour = (sim_hour + (dt / 5)) % 24 
-        
-        # ACTUAL IMPLEMENTATION: Live regression prediction dictating logic
         nn_raw = traffic_predictor.predict([[sim_hour]])[0]
         intensity_factor = max(0.1, min(1.5, nn_raw))
         
-        spawn_chance_per_sec = 0.8 * intensity_factor
-        if random.random() < spawn_chance_per_sec * dt:
-            direction = random.choices([NORTH, SOUTH, EAST, WEST], weights=[3, 3, 2, 2])[0]
-            vehicles.append(Vehicle(direction))
-            logger.log_spawn() # Log the newly spawned car
+        # BENCHMARK SPAWN LOGIC (GRIDLOCK OVERRIDE)
+        if logger.total_spawned < TOTAL_CARS:
+            spawn_chance_per_sec = 5.0  
+            if random.random() < spawn_chance_per_sec * dt:
+                direction = random.choices([NORTH, SOUTH, EAST, WEST], weights=[3, 3, 2, 2])[0]
+                vehicles.append(Vehicle(direction))
+                logger.log_spawn()
 
         vehicles_by_dir = [[] for _ in range(4)]
         for v in vehicles: vehicles_by_dir[v.direction].append(v)
@@ -429,33 +309,31 @@ def main():
             if idx > 0: ahead = lane_mates[idx-1]
             v.update_physics(light_states[v.direction], ahead)
 
-        # Update vehicle list and log the ones that successfully leave the screen
         active_vehicles = []
         for v in vehicles:
             if -100 < v.x < WIDTH+100 and -100 < v.y < HEIGHT+100:
                 active_vehicles.append(v)
             else:
-                logger.log_cleared_vehicle(v) # Log the car before it gets deleted
+                logger.log_cleared_vehicle(v)
         vehicles = active_vehicles
+
+        # AUTO-SHUTDOWN WHEN BENCHMARK IS COMPLETE
+        if logger.total_cleared >= TOTAL_CARS:
+            running = False
 
         # RENDERING
         screen.fill((20, 100, 20))
         pygame.draw.rect(screen, GRAY, (0, CENTER_Y - ROAD_WIDTH//2, WIDTH, ROAD_WIDTH)) 
         pygame.draw.rect(screen, GRAY, (CENTER_X - ROAD_WIDTH//2, 0, ROAD_WIDTH, HEIGHT)) 
-        
         for v in vehicles: v.draw(screen)
-
         for i, pos in enumerate([(CENTER_X + 80, CENTER_Y - 150), (CENTER_X - 80, CENTER_Y + 150), 
                                  (CENTER_X - 150, CENTER_Y - 80), (CENTER_X + 150, CENTER_Y + 80)]):
             col = GREEN if light_states[i] == "GREEN" else YELLOW if light_states[i] == "YELLOW" else RED
             pygame.draw.circle(screen, col, pos, 15)
 
-        # Draw the new Diagnostics HUD
-        draw_ui_panel(screen, ui_font, ui_title, sim_hour, intensity_factor, tl_controller, best_genome)
-
+        draw_ui_panel(screen, ui_font, ui_title, sim_hour, intensity_factor, tl_controller, static_params, logger)
         pygame.display.flip()
-
-    # User pressed X to close the window. Print the final report before shutting down.
+        
     logger.print_final_report()
     pygame.quit()
     sys.exit()
